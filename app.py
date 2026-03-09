@@ -16,7 +16,7 @@ from quart import (
     current_app,
 )
 
-from openai import AsyncAzureOpenAI
+from openai import AsyncAzureOpenAI, AsyncOpenAI
 from azure.identity.aio import (
     DefaultAzureCredential,
     get_bearer_token_provider
@@ -114,10 +114,33 @@ MS_DEFENDER_ENABLED = os.environ.get("MS_DEFENDER_ENABLED", "true").lower() == "
 azure_openai_tools = []
 azure_openai_available_tools = []
 
-# Initialize Azure OpenAI Client
+# Initialize OpenAI Client
 async def init_openai_client():
+    if app_settings.base_settings.llm_source == "portkey":
+        return await _init_portkey_client()
+    return await _init_azure_openai_client()
+
+
+async def _init_portkey_client():
+    try:
+        if not app_settings.portkey:
+            raise ValueError(
+                "LLM_SOURCE is set to 'portkey' but Portkey settings "
+                "(PORTKEY_API_KEY, PORTKEY_BASE_URI, PORTKEY_MODEL) are not configured"
+            )
+
+        return AsyncOpenAI(
+            api_key=app_settings.portkey.api_key,
+            base_url=app_settings.portkey.base_uri,
+        )
+    except Exception as e:
+        logging.exception("Exception in Portkey client initialization", e)
+        raise e
+
+
+async def _init_azure_openai_client():
     azure_openai_client = None
-    
+
     try:
         # API version check
         if (
@@ -288,7 +311,7 @@ def prepare_model_args(request_body, request_headers):
         "top_p": app_settings.azure_openai.top_p,
         "stop": app_settings.azure_openai.stop_sequence,
         "stream": app_settings.azure_openai.stream,
-        "model": app_settings.azure_openai.model
+        "model": app_settings.model_name
     }
 
     if len(messages) > 0:
@@ -1050,7 +1073,7 @@ async def generate_title(conversation_messages) -> str:
     try:
         azure_openai_client = await init_openai_client()
         response = await azure_openai_client.chat.completions.create(
-            model=app_settings.azure_openai.model, messages=messages, temperature=1, max_tokens=64
+            model=app_settings.model_name, messages=messages, temperature=1, max_tokens=64
         )
 
         title = response.choices[0].message.content
