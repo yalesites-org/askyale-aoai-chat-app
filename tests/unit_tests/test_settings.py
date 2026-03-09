@@ -52,6 +52,25 @@ def test_dotenv_with_azure_search_success(app_settings):
     print(payload)
 
 
+def test_dotenv_portkey_source(monkeypatch, app_settings):
+    # Clear any real PORTKEY_* env vars that would override dotenv values
+    for key in list(os.environ):
+        if key.startswith("PORTKEY_"):
+            monkeypatch.delenv(key, raising=False)
+
+    # Re-import to pick up dotenv values without env var interference
+    from importlib import reload
+    import backend.settings as settings_module
+    settings_module = reload(settings_module)
+    reloaded = settings_module.app_settings
+
+    assert reloaded.base_settings.llm_source == "portkey"
+    assert reloaded.portkey is not None
+    assert reloaded.portkey.api_key == "pk-test-key-123"
+    assert reloaded.portkey.base_uri == "https://api.portkey.ai/v1"
+    assert reloaded.portkey.model == "claude-sonnet-4-20250514"
+
+
 def test_dotenv_with_elasticsearch_success(app_settings):
     # Validate model object
     assert app_settings.search is not None

@@ -82,6 +82,19 @@ class _PromptflowSettings(BaseSettings):
     citations_field_name: str = "documents"
 
 
+class _PortkeySettings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="PORTKEY_",
+        env_file=DOTENV_PATH,
+        extra="ignore",
+        env_ignore_empty=True
+    )
+
+    api_key: str
+    base_uri: str
+    model: str
+
+
 class _AzureOpenAIFunction(BaseModel):
     name: str = Field(..., min_length=1)
     description: str = Field(..., min_length=1)
@@ -761,6 +774,7 @@ class _BaseSettings(BaseSettings):
     auth_enabled: bool = True
     sanitize_answer: bool = False
     use_promptflow: bool = False
+    llm_source: str = "azure"
 
 
 class _AppSettings(BaseModel):
@@ -773,6 +787,15 @@ class _AppSettings(BaseModel):
     chat_history: Optional[_ChatHistorySettings] = None
     datasource: Optional[DatasourcePayloadConstructor] = None
     promptflow: Optional[_PromptflowSettings] = None
+    portkey: Optional[_PortkeySettings] = None
+
+    @model_validator(mode="after")
+    def set_portkey_settings(self) -> Self:
+        try:
+            self.portkey = _PortkeySettings()
+        except ValidationError:
+            self.portkey = None
+        return self
 
     @model_validator(mode="after")
     def set_promptflow_settings(self) -> Self:
