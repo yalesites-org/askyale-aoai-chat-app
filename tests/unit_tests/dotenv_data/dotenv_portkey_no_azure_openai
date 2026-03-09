@@ -1,4 +1,0 @@
-LLM_SOURCE=portkey
-PORTKEY_API_KEY=pk-test-key-456
-PORTKEY_BASE_URI=https://api.portkey.ai/v1
-PORTKEY_MODEL=gpt-4o
