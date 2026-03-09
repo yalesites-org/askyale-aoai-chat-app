@@ -116,6 +116,7 @@ azure_openai_available_tools = []
 
 # Initialize OpenAI Client
 async def init_openai_client():
+    logging.info(f"init_openai_client: llm_source={app_settings.base_settings.llm_source}, portkey={app_settings.portkey is not None}")
     if app_settings.base_settings.llm_source == "portkey":
         return await _init_portkey_client()
     return await _init_azure_openai_client()
