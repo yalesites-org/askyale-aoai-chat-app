@@ -92,7 +92,6 @@ class _PortkeySettings(BaseSettings):
 
     api_key: str
     base_uri: str
-    model: str
 
 
 class _AzureOpenAIFunction(BaseModel):
@@ -788,12 +787,6 @@ class _AppSettings(BaseModel):
     datasource: Optional[DatasourcePayloadConstructor] = None
     promptflow: Optional[_PromptflowSettings] = None
     portkey: Optional[_PortkeySettings] = None
-
-    @property
-    def model_name(self) -> str:
-        if self.base_settings.llm_source == "portkey" and self.portkey:
-            return self.portkey.model
-        return self.azure_openai.model
 
     @model_validator(mode="after")
     def set_promptflow_settings(self) -> Self:

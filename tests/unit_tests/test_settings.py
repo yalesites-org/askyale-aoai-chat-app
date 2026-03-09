@@ -70,7 +70,6 @@ def test_dotenv_portkey_source(monkeypatch):
     assert app_settings.portkey is not None
     assert app_settings.portkey.api_key == "pk-test-key-123"
     assert app_settings.portkey.base_uri == "https://api.portkey.ai/v1"
-    assert app_settings.portkey.model == "claude-sonnet-4-20250514"
 
 
 def test_dotenv_azure_default_llm_source(app_settings):
@@ -79,27 +78,6 @@ def test_dotenv_azure_default_llm_source(app_settings):
     assert app_settings.portkey is None
     assert app_settings.azure_openai is not None
 
-
-def test_dotenv_portkey_model_name(monkeypatch):
-    """When LLM_SOURCE=portkey, model_name returns portkey model."""
-    for key in list(os.environ):
-        if key.startswith("PORTKEY_"):
-            monkeypatch.delenv(key, raising=False)
-
-    dotenv_path = os.path.join(
-        os.path.dirname(__file__), "dotenv_data", "dotenv_portkey_source"
-    )
-    os.environ["DOTENV_PATH"] = dotenv_path
-    settings_module = import_module("backend.settings")
-    settings_module = reload(settings_module)
-    app_settings = settings_module.app_settings
-
-    assert app_settings.model_name == "claude-sonnet-4-20250514"
-
-
-def test_dotenv_azure_default_model_name(app_settings):
-    """When LLM_SOURCE=azure, model_name returns azure openai model."""
-    assert app_settings.model_name == "my_model"
 
 
 
