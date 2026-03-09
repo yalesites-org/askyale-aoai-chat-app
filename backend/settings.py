@@ -779,7 +779,7 @@ class _BaseSettings(BaseSettings):
 
 class _AppSettings(BaseModel):
     base_settings: _BaseSettings = _BaseSettings()
-    azure_openai: _AzureOpenAISettings = _AzureOpenAISettings()
+    azure_openai: Optional[_AzureOpenAISettings] = None
     search: _SearchCommonSettings = _SearchCommonSettings()
     ui: Optional[_UiSettings] = _UiSettings()
     
@@ -793,7 +793,20 @@ class _AppSettings(BaseModel):
     def model_name(self) -> str:
         if self.base_settings.llm_source == "portkey" and self.portkey:
             return self.portkey.model
-        return self.azure_openai.model
+        if self.azure_openai:
+            return self.azure_openai.model
+        raise ValueError("No LLM model configured")
+
+    @model_validator(mode="after")
+    def set_azure_openai_settings(self) -> Self:
+        if self.azure_openai is None:
+            try:
+                self.azure_openai = _AzureOpenAISettings()
+            except ValidationError:
+                if self.base_settings.llm_source != "portkey":
+                    raise
+                self.azure_openai = None
+        return self
 
     @model_validator(mode="after")
     def set_promptflow_settings(self) -> Self:

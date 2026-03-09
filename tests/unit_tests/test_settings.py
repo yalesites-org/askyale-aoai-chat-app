@@ -102,6 +102,27 @@ def test_dotenv_azure_default_model_name(app_settings):
     assert app_settings.model_name == "my_model"
 
 
+def test_dotenv_portkey_no_azure_openai(monkeypatch):
+    """Portkey mode works even without Azure OpenAI settings."""
+    for key in list(os.environ):
+        if key.startswith("PORTKEY_"):
+            monkeypatch.delenv(key, raising=False)
+
+    dotenv_path = os.path.join(
+        os.path.dirname(__file__), "dotenv_data", "dotenv_portkey_no_azure_openai"
+    )
+    os.environ["DOTENV_PATH"] = dotenv_path
+    settings_module = import_module("backend.settings")
+    settings_module = reload(settings_module)
+    app_settings = settings_module.app_settings
+
+    assert app_settings.base_settings.llm_source == "portkey"
+    assert app_settings.portkey is not None
+    assert app_settings.portkey.api_key == "pk-test-key-456"
+    assert app_settings.model_name == "gpt-4o"
+    assert app_settings.azure_openai is None
+
+
 def test_dotenv_with_elasticsearch_success(app_settings):
     # Validate model object
     assert app_settings.search is not None
