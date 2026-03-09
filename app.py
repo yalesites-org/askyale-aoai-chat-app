@@ -126,12 +126,15 @@ async def _init_portkey_client():
         if not app_settings.portkey:
             raise ValueError(
                 "LLM_SOURCE is set to 'portkey' but Portkey settings "
-                "(PORTKEY_API_KEY, PORTKEY_BASE_URI, PORTKEY_MODEL) are not configured"
+                "(PORTKEY_API_KEY, PORTKEY_BASE_URI) are not configured"
             )
 
         return AsyncOpenAI(
-            api_key=app_settings.portkey.api_key,
+            api_key="X",  # not used; auth is via x-portkey-api-key header
             base_url=app_settings.portkey.base_uri,
+            default_headers={
+                "x-portkey-api-key": app_settings.portkey.api_key,
+            },
         )
     except Exception as e:
         logging.exception("Exception in Portkey client initialization")
