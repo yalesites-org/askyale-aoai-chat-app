@@ -134,7 +134,7 @@ async def _init_portkey_client():
             base_url=app_settings.portkey.base_uri,
         )
     except Exception as e:
-        logging.exception("Exception in Portkey client initialization", e)
+        logging.exception("Exception in Portkey client initialization")
         raise e
 
 
@@ -268,7 +268,7 @@ def prepare_model_args(request_body, request_headers):
         messages = [
             {
                 "role": "system",
-                "content": app_settings.azure_openai.system_message
+                "content": app_settings.llm_system_message
             }
         ]
 
@@ -306,11 +306,11 @@ def prepare_model_args(request_body, request_headers):
 
     model_args = {
         "messages": messages,
-        "temperature": app_settings.azure_openai.temperature,
-        "max_tokens": app_settings.azure_openai.max_tokens,
-        "top_p": app_settings.azure_openai.top_p,
-        "stop": app_settings.azure_openai.stop_sequence,
-        "stream": app_settings.azure_openai.stream,
+        "temperature": app_settings.llm_temperature,
+        "max_tokens": app_settings.llm_max_tokens,
+        "top_p": app_settings.llm_top_p,
+        "stop": app_settings.llm_stop_sequence,
+        "stream": app_settings.llm_stream,
         "model": app_settings.model_name
     }
 
@@ -600,12 +600,7 @@ async def stream_chat_request(request_body, request_headers):
 
 async def conversation_internal(request_body, request_headers):
     try:
-        stream = (
-            app_settings.azure_openai.stream
-            if app_settings.azure_openai
-            else True
-        )
-        if stream and not app_settings.base_settings.use_promptflow:
+        if app_settings.llm_stream and not app_settings.base_settings.use_promptflow:
             result = await stream_chat_request(request_body, request_headers)
             response = await make_response(format_as_ndjson(result))
             response.timeout = None

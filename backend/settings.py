@@ -93,6 +93,12 @@ class _PortkeySettings(BaseSettings):
     api_key: str
     base_uri: str
     model: str
+    temperature: float = 0
+    top_p: float = 0
+    max_tokens: int = 1000
+    stream: bool = True
+    stop_sequence: Optional[List[str]] = None
+    system_message: str = "You are an AI assistant that helps people find information."
 
 
 class _AzureOpenAIFunction(BaseModel):
@@ -774,7 +780,7 @@ class _BaseSettings(BaseSettings):
     auth_enabled: bool = True
     sanitize_answer: bool = False
     use_promptflow: bool = False
-    llm_source: str = "azure"
+    llm_source: Literal["azure", "portkey"] = "azure"
 
 
 class _AppSettings(BaseModel):
@@ -796,6 +802,38 @@ class _AppSettings(BaseModel):
         if self.azure_openai:
             return self.azure_openai.model
         raise ValueError("No LLM model configured")
+
+    def _llm_setting(self, name: str):
+        """Resolve an LLM setting from the active backend."""
+        if self.base_settings.llm_source == "portkey" and self.portkey:
+            return getattr(self.portkey, name)
+        if self.azure_openai:
+            return getattr(self.azure_openai, name)
+        raise ValueError(f"No LLM setting '{name}' configured")
+
+    @property
+    def llm_temperature(self) -> float:
+        return self._llm_setting("temperature")
+
+    @property
+    def llm_max_tokens(self) -> int:
+        return self._llm_setting("max_tokens")
+
+    @property
+    def llm_top_p(self) -> float:
+        return self._llm_setting("top_p")
+
+    @property
+    def llm_stop_sequence(self):
+        return self._llm_setting("stop_sequence")
+
+    @property
+    def llm_stream(self) -> bool:
+        return self._llm_setting("stream")
+
+    @property
+    def llm_system_message(self) -> str:
+        return self._llm_setting("system_message")
 
     @model_validator(mode="after")
     def set_azure_openai_settings(self) -> Self:
