@@ -316,7 +316,12 @@ def prepare_model_args(request_body, request_headers):
 
     if len(messages) > 0:
         if messages[-1]["role"] == "user":
-            if app_settings.azure_openai.function_call_azure_functions_enabled and len(azure_openai_tools) > 0:
+            if (
+                app_settings.base_settings.llm_source == "azure"
+                and app_settings.azure_openai
+                and app_settings.azure_openai.function_call_azure_functions_enabled
+                and len(azure_openai_tools) > 0
+            ):
                 model_args["tools"] = azure_openai_tools
 
             if app_settings.datasource:
@@ -478,7 +483,11 @@ async def complete_chat_request(request_body, request_headers):
         history_metadata = request_body.get("history_metadata", {})
         non_streaming_response = format_non_streaming_response(response, history_metadata, apim_request_id)
 
-        if app_settings.azure_openai.function_call_azure_functions_enabled:
+        if (
+            app_settings.base_settings.llm_source == "azure"
+            and app_settings.azure_openai
+            and app_settings.azure_openai.function_call_azure_functions_enabled
+        ):
             function_response = await process_function_call(response)  # Add await here
 
             if function_response:
@@ -559,7 +568,11 @@ async def stream_chat_request(request_body, request_headers):
     history_metadata = request_body.get("history_metadata", {})
     
     async def generate(apim_request_id, history_metadata):
-        if app_settings.azure_openai.function_call_azure_functions_enabled:
+        if (
+            app_settings.base_settings.llm_source == "azure"
+            and app_settings.azure_openai
+            and app_settings.azure_openai.function_call_azure_functions_enabled
+        ):
             # Maintain state during function call streaming
             function_call_stream_state = AzureOpenaiFunctionCallStreamState()
             
@@ -587,7 +600,12 @@ async def stream_chat_request(request_body, request_headers):
 
 async def conversation_internal(request_body, request_headers):
     try:
-        if app_settings.azure_openai.stream and not app_settings.base_settings.use_promptflow:
+        stream = (
+            app_settings.azure_openai.stream
+            if app_settings.azure_openai
+            else True
+        )
+        if stream and not app_settings.base_settings.use_promptflow:
             result = await stream_chat_request(request_body, request_headers)
             response = await make_response(format_as_ndjson(result))
             response.timeout = None
