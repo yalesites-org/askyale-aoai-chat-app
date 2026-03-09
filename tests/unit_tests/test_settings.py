@@ -73,6 +73,13 @@ def test_dotenv_portkey_source(monkeypatch):
     assert app_settings.portkey.model == "claude-sonnet-4-20250514"
 
 
+def test_dotenv_azure_default_llm_source(app_settings):
+    """Existing Azure config without LLM_SOURCE defaults to azure."""
+    assert app_settings.base_settings.llm_source == "azure"
+    assert app_settings.portkey is None
+    assert app_settings.azure_openai is not None
+
+
 def test_dotenv_with_elasticsearch_success(app_settings):
     # Validate model object
     assert app_settings.search is not None
