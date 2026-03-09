@@ -790,14 +790,6 @@ class _AppSettings(BaseModel):
     portkey: Optional[_PortkeySettings] = None
 
     @model_validator(mode="after")
-    def set_portkey_settings(self) -> Self:
-        try:
-            self.portkey = _PortkeySettings()
-        except ValidationError:
-            self.portkey = None
-        return self
-
-    @model_validator(mode="after")
     def set_promptflow_settings(self) -> Self:
         try:
             self.promptflow = _PromptflowSettings()
@@ -857,6 +849,15 @@ class _AppSettings(BaseModel):
         except ValidationError as e:
             logging.warning("No datasource configuration found in the environment -- calls will be made to Azure OpenAI without grounding data.")
             logging.warning(e.errors())
+            return self
+
+    @model_validator(mode="after")
+    def set_portkey_settings(self) -> Self:
+        try:
+            self.portkey = _PortkeySettings()
+        except ValidationError:
+            self.portkey = None
+        return self
 
 
 app_settings = _AppSettings()
