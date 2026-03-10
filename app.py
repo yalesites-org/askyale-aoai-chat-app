@@ -35,6 +35,7 @@ from backend.utils import (
     convert_to_pf_format,
     format_pf_non_streaming_response,
 )
+from backend.search import search_documents, build_rag_system_prompt, build_citations
 
 bp = Blueprint("routes", __name__, static_folder="static", template_folder="static")
 
@@ -116,7 +117,6 @@ azure_openai_available_tools = []
 
 # Initialize OpenAI Client
 async def init_openai_client():
-    logging.info(f"init_openai_client: llm_source={app_settings.base_settings.llm_source}, portkey={app_settings.portkey is not None}")
     if app_settings.base_settings.llm_source == "portkey":
         return await _init_portkey_client()
     return await _init_azure_openai_client()
@@ -265,7 +265,7 @@ async def init_cosmosdb_client():
     return cosmos_conversation_client
 
 
-def prepare_model_args(request_body, request_headers):
+async def prepare_model_args(request_body, request_headers):
     request_messages = request_body.get("messages", [])
     messages = []
     if not app_settings.datasource:
@@ -297,7 +297,7 @@ def prepare_model_args(request_body, request_headers):
                     if "context" in message:
                         context_obj = json.loads(message["context"])
                         messages_helper["context"] = context_obj
-                    
+
                     messages.append(messages_helper)
 
 
@@ -306,7 +306,44 @@ def prepare_model_args(request_body, request_headers):
         authenticated_user_details = get_authenticated_user_details(request_headers)
         application_name = app_settings.ui.title
         user_security_context = get_msdefender_user_json(authenticated_user_details, request_headers, application_name )  # security component introduced here https://learn.microsoft.com/en-us/azure/defender-for-cloud/gain-end-user-context-ai
-    
+
+    # Client-side RAG: for portkey mode with a datasource, query search
+    # ourselves and inject context into the prompt instead of using
+    # Azure's server-side data_sources extension.
+    rag_citations = None
+    is_portkey = app_settings.base_settings.llm_source == "portkey"
+
+    if (
+        app_settings.datasource
+        and is_portkey
+        and len(messages) > 0
+        and messages[-1]["role"] == "user"
+    ):
+        from backend.settings import _AzureSearchSettings
+        if isinstance(app_settings.datasource, _AzureSearchSettings):
+            user_query = messages[-1]["content"]
+            documents = await search_documents(
+                user_query,
+                app_settings.datasource,
+                app_settings.azure_openai,
+                app_settings.search,
+            )
+            base_system_message = app_settings.search.role_information
+            rag_system_prompt = build_rag_system_prompt(base_system_message, documents)
+            messages.insert(0, {
+                "role": "system",
+                "content": rag_system_prompt,
+            })
+            rag_citations = build_citations(documents) if documents else None
+        else:
+            logging.warning(
+                "Client-side RAG for portkey mode is only supported with "
+                "Azure Cognitive Search datasource. Skipping RAG."
+            )
+            messages.insert(0, {
+                "role": "system",
+                "content": app_settings.azure_openai.system_message,
+            })
 
     model_args = {
         "messages": messages,
@@ -319,7 +356,10 @@ def prepare_model_args(request_body, request_headers):
     }
 
     if len(messages) > 0:
-        if messages[-1]["role"] == "user":
+        last_user_msg = next(
+            (m for m in reversed(messages) if m["role"] == "user"), None
+        )
+        if last_user_msg:
             if (
                 app_settings.base_settings.llm_source == "azure"
                 and app_settings.azure_openai.function_call_azure_functions_enabled
@@ -327,7 +367,7 @@ def prepare_model_args(request_body, request_headers):
             ):
                 model_args["tools"] = azure_openai_tools
 
-            if app_settings.datasource:
+            if app_settings.datasource and not is_portkey:
                 model_args["extra_body"] = {
                     "data_sources": [
                         app_settings.datasource.construct_payload_configuration(
@@ -372,11 +412,11 @@ def prepare_model_args(request_body, request_headers):
 
     if model_args.get("extra_body") is None:
         model_args["extra_body"] = {}
-    if user_security_context:  # security component introduced here https://learn.microsoft.com/en-us/azure/defender-for-cloud/gain-end-user-context-ai     
+    if user_security_context:  # security component introduced here https://learn.microsoft.com/en-us/azure/defender-for-cloud/gain-end-user-context-ai
                 model_args["extra_body"]["user_security_context"]= user_security_context.to_dict()
     logging.debug(f"REQUEST BODY: {json.dumps(model_args_clean, indent=4)}")
 
-    return model_args
+    return model_args, rag_citations
 
 
 async def promptflow_request(request):
@@ -455,20 +495,20 @@ async def send_chat_request(request_body, request_headers):
     for message in messages:
         if message.get("role") != 'tool':
             filtered_messages.append(message)
-            
+
     request_body['messages'] = filtered_messages
-    model_args = prepare_model_args(request_body, request_headers)
+    model_args, rag_citations = await prepare_model_args(request_body, request_headers)
 
     try:
         azure_openai_client = await init_openai_client()
         raw_response = await azure_openai_client.chat.completions.with_raw_response.create(**model_args)
         response = raw_response.parse()
-        apim_request_id = raw_response.headers.get("apim-request-id") 
+        apim_request_id = raw_response.headers.get("apim-request-id")
     except Exception as e:
         logging.exception("Exception in send_chat_request")
         raise e
 
-    return response, apim_request_id
+    return response, apim_request_id, rag_citations
 
 
 async def complete_chat_request(request_body, request_headers):
@@ -482,20 +522,27 @@ async def complete_chat_request(request_body, request_headers):
             app_settings.promptflow.citations_field_name
         )
     else:
-        response, apim_request_id = await send_chat_request(request_body, request_headers)
+        response, apim_request_id, rag_citations = await send_chat_request(request_body, request_headers)
         history_metadata = request_body.get("history_metadata", {})
         non_streaming_response = format_non_streaming_response(response, history_metadata, apim_request_id)
+
+        # Inject client-side RAG citations for portkey mode
+        if rag_citations and non_streaming_response.get("choices"):
+            non_streaming_response["choices"][0]["messages"].insert(0, {
+                "role": "tool",
+                "content": json.dumps({"citations": rag_citations}),
+            })
 
         if (
             app_settings.base_settings.llm_source == "azure"
             and app_settings.azure_openai.function_call_azure_functions_enabled
         ):
-            function_response = await process_function_call(response)  # Add await here
+            function_response = await process_function_call(response)
 
             if function_response:
                 request_body["messages"].extend(function_response)
 
-                response, apim_request_id = await send_chat_request(request_body, request_headers)
+                response, apim_request_id, _ = await send_chat_request(request_body, request_headers)
                 history_metadata = request_body.get("history_metadata", {})
                 non_streaming_response = format_non_streaming_response(response, history_metadata, apim_request_id)
 
@@ -566,20 +613,37 @@ async def process_function_call_stream(completionChunk, function_call_stream_sta
 
 
 async def stream_chat_request(request_body, request_headers):
-    response, apim_request_id = await send_chat_request(request_body, request_headers)
+    response, apim_request_id, rag_citations = await send_chat_request(request_body, request_headers)
     history_metadata = request_body.get("history_metadata", {})
-    
+
     async def generate(apim_request_id, history_metadata):
+        # Emit client-side RAG citations as the first chunk for portkey mode
+        if rag_citations:
+            yield {
+                "id": "",
+                "model": "",
+                "created": 0,
+                "object": "",
+                "choices": [{
+                    "messages": [{
+                        "role": "tool",
+                        "content": json.dumps({"citations": rag_citations}),
+                    }]
+                }],
+                "history_metadata": history_metadata,
+                "apim-request-id": apim_request_id,
+            }
+
         if (
             app_settings.base_settings.llm_source == "azure"
             and app_settings.azure_openai.function_call_azure_functions_enabled
         ):
             # Maintain state during function call streaming
             function_call_stream_state = AzureOpenaiFunctionCallStreamState()
-            
+
             async for completionChunk in response:
                 stream_state = await process_function_call_stream(completionChunk, function_call_stream_state, request_body, request_headers, history_metadata, apim_request_id)
-                
+
                 # No function call, asistant response
                 if stream_state == "INITIAL":
                     yield format_stream_response(completionChunk, history_metadata, apim_request_id)
@@ -588,10 +652,10 @@ async def stream_chat_request(request_body, request_headers):
                 # Append function calls and results to history and send to OpenAI, to stream the final answer.
                 if stream_state == "COMPLETED":
                     request_body["messages"].extend(function_call_stream_state.function_messages)
-                    function_response, apim_request_id = await send_chat_request(request_body, request_headers)
+                    function_response, apim_request_id, _ = await send_chat_request(request_body, request_headers)
                     async for functionCompletionChunk in function_response:
                         yield format_stream_response(functionCompletionChunk, history_metadata, apim_request_id)
-                
+
         else:
             async for completionChunk in response:
                 yield format_stream_response(completionChunk, history_metadata, apim_request_id)
