@@ -146,7 +146,7 @@ async def test_search_documents_simple(mock_search_settings, mock_azure_openai_s
     # Verify search was called with text search, not vector
     call_kwargs = mock_client.search.call_args[1]
     assert call_kwargs["search_text"] == "test query"
-    assert "vectors" not in call_kwargs
+    assert "vector" not in call_kwargs
 
 
 @pytest.mark.asyncio
@@ -191,7 +191,8 @@ async def test_search_documents_vector(mock_search_settings, mock_azure_openai_s
 
     call_kwargs = mock_client.search.call_args[1]
     assert call_kwargs["search_text"] is None  # Pure vector, no text
-    assert "vectors" in call_kwargs
+    assert "vector" in call_kwargs
+    assert "vector_fields" in call_kwargs
 
 
 @pytest.mark.asyncio

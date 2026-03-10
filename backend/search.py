@@ -5,7 +5,6 @@ from typing import List, Optional
 from azure.core.credentials import AzureKeyCredential
 from azure.identity.aio import DefaultAzureCredential, get_bearer_token_provider
 from azure.search.documents import SearchClient
-from azure.search.documents.models import Vector
 from openai import AsyncAzureOpenAI
 
 
@@ -121,12 +120,9 @@ async def search_documents(
                 if search_settings.vector_columns
                 else "contentVector"
             )
-            vector = Vector(
-                value=embedding,
-                k=search_settings.top_k,
-                fields=vector_fields,
-            )
-            search_kwargs["vectors"] = [vector]
+            search_kwargs["vector"] = embedding
+            search_kwargs["vector_fields"] = vector_fields
+            search_kwargs["top_k"] = search_settings.top_k
 
     # For pure vector search, don't send search_text
     if query_type == "vector":
