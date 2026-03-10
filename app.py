@@ -345,6 +345,12 @@ async def prepare_model_args(request_body, request_headers):
                 "content": app_settings.azure_openai.system_message,
             })
 
+    excluded_params = {
+        p.strip()
+        for p in (app_settings.azure_openai.excluded_params or "").split(",")
+        if p.strip()
+    }
+
     model_args = {
         "messages": messages,
         "temperature": app_settings.azure_openai.temperature,
@@ -354,6 +360,9 @@ async def prepare_model_args(request_body, request_headers):
         "stream": app_settings.azure_openai.stream,
         "model": app_settings.azure_openai.model
     }
+
+    for param in excluded_params:
+        model_args.pop(param, None)
 
     if len(messages) > 0:
         last_user_msg = next(
