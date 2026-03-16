@@ -5,6 +5,7 @@ import logging
 import uuid
 import httpx
 import asyncio
+from typing import Optional
 from quart import (
     Blueprint,
     Quart,
@@ -263,6 +264,21 @@ async def init_cosmosdb_client():
         logging.debug("CosmosDB not configured")
 
     return cosmos_conversation_client
+
+
+def _build_system_message(
+    user_system_message: str,
+    admin_system_message: Optional[str] = None,
+) -> str:
+    """Combine admin and user system messages into a single system message.
+
+    When admin_system_message is set, it is prepended to the user message
+    with a double newline separator. When unset or blank, the user message
+    is returned unchanged.
+    """
+    if admin_system_message and admin_system_message.strip():
+        return f"{admin_system_message}\n\n{user_system_message}"
+    return user_system_message
 
 
 async def prepare_model_args(request_body, request_headers):
