@@ -288,7 +288,10 @@ async def prepare_model_args(request_body, request_headers):
         messages = [
             {
                 "role": "system",
-                "content": app_settings.azure_openai.system_message
+                "content": _build_system_message(
+                    app_settings.azure_openai.system_message,
+                    app_settings.azure_openai.admin_system_message,
+                )
             }
         ]
 
@@ -345,7 +348,11 @@ async def prepare_model_args(request_body, request_headers):
                 app_settings.search,
             )
             base_system_message = app_settings.search.role_information
-            rag_system_prompt = build_rag_system_prompt(base_system_message, documents)
+            combined_base = _build_system_message(
+                base_system_message,
+                app_settings.azure_openai.admin_system_message,
+            )
+            rag_system_prompt = build_rag_system_prompt(combined_base, documents)
             messages.insert(0, {
                 "role": "system",
                 "content": rag_system_prompt,
@@ -358,7 +365,10 @@ async def prepare_model_args(request_body, request_headers):
             )
             messages.insert(0, {
                 "role": "system",
-                "content": app_settings.azure_openai.system_message,
+                "content": _build_system_message(
+                    app_settings.azure_openai.system_message,
+                    app_settings.azure_openai.admin_system_message,
+                ),
             })
 
     excluded_params = {

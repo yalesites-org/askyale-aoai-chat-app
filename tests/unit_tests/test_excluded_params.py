@@ -12,6 +12,7 @@ def _make_app_settings(excluded_params=None, llm_source="azure"):
     azure_openai.model = "gpt-4.1-mini"
     azure_openai.system_message = "You are a helpful assistant."
     azure_openai.excluded_params = excluded_params
+    azure_openai.admin_system_message = None
     azure_openai.function_call_azure_functions_enabled = False
 
     base_settings = MagicMock()
