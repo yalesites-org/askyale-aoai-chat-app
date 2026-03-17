@@ -1,7 +1,6 @@
 import copy
 import json
 import os
-import re
 import logging
 import uuid
 import httpx
@@ -497,13 +496,6 @@ def _parse_tool_arguments(raw: str) -> dict:
         return {}
 
 
-_TOOL_ID_UNSAFE = re.compile(r"[^a-zA-Z0-9_-]")
-
-def _safe_tool_id(tool_id: str) -> str:
-    """Sanitize a tool call ID to satisfy Vertex AI's ^[a-zA-Z0-9_-]+$ constraint."""
-    return _TOOL_ID_UNSAFE.sub("_", str(tool_id))
-
-
 async def process_function_call(response):
     response_message = response.choices[0].message
 
@@ -523,25 +515,27 @@ async def process_function_call(response):
     if not tool_results:
         return None
 
+    # Use simple sequential IDs we control — provider-returned IDs may contain
+    # characters that fail Vertex AI's ^[a-zA-Z0-9_-]+$ validation on round-trip.
     messages = [
         {
             "role": "assistant",
             "tool_calls": [
                 {
-                    "id": _safe_tool_id(tc.id),
+                    "id": f"tool_{i}",
                     "type": "function",
                     "function": {"name": tc.function.name, "arguments": tc.function.arguments},
                 }
-                for tc, _ in tool_results
+                for i, (tc, _) in enumerate(tool_results)
             ],
             "content": None,
         }
     ]
-    for tool_call, function_response in tool_results:
+    for i, (tool_call, function_response) in enumerate(tool_results):
         messages.append(
             {
                 "role": "tool",
-                "tool_call_id": _safe_tool_id(tool_call.id),
+                "tool_call_id": f"tool_{i}",
                 "content": function_response,
             }
         )
@@ -656,18 +650,18 @@ async def process_function_call_stream(completionChunk, function_call_stream_sta
                 "role": "assistant",
                 "tool_calls": [
                     {
-                        "id": _safe_tool_id(tc["tool_id"]),
+                        "id": f"tool_{i}",
                         "type": "function",
                         "function": {"name": tc["tool_name"], "arguments": tc["tool_arguments"]},
                     }
-                    for tc in function_call_stream_state.tool_calls
+                    for i, tc in enumerate(function_call_stream_state.tool_calls)
                 ],
                 "content": None,
             })
-            for tool_call, tool_response in zip(function_call_stream_state.tool_calls, tool_responses):
+            for i, (tool_call, tool_response) in enumerate(zip(function_call_stream_state.tool_calls, tool_responses)):
                 function_call_stream_state.function_messages.append({
                     "role": "tool",
-                    "tool_call_id": _safe_tool_id(tool_call["tool_id"]),
+                    "tool_call_id": f"tool_{i}",
                     "content": tool_response,
                 })
             
