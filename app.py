@@ -313,6 +313,10 @@ async def prepare_model_args(request_body, request_headers):
                         messages_helper["name"] = message["name"]
                     if "function_call" in message:
                         messages_helper["function_call"] = message["function_call"]
+                    if "tool_calls" in message:
+                        messages_helper["tool_calls"] = message["tool_calls"]
+                    if "tool_call_id" in message:
+                        messages_helper["tool_call_id"] = message["tool_call_id"]
                     messages_helper["content"] = message["content"]
                     if "context" in message:
                         context_obj = json.loads(message["context"])
