@@ -397,15 +397,12 @@ async def prepare_model_args(request_body, request_headers):
         )
         if last_user_msg:
             # Always include local tools; merge with Azure Functions tools when enabled
-            tools_to_use = list(LOCAL_TOOLS_SCHEMAS)
-            if (
+            azure_tools_enabled = (
                 app_settings.base_settings.llm_source == "azure"
                 and app_settings.azure_openai.function_call_azure_functions_enabled
                 and len(azure_openai_tools) > 0
-            ):
-                tools_to_use.extend(azure_openai_tools)
-            if tools_to_use:
-                model_args["tools"] = tools_to_use
+            )
+            model_args["tools"] = LOCAL_TOOLS_SCHEMAS + azure_openai_tools if azure_tools_enabled else LOCAL_TOOLS_SCHEMAS
 
             if app_settings.datasource and not is_portkey:
                 model_args["extra_body"] = {
@@ -492,6 +489,13 @@ async def promptflow_request(request):
         logging.error(f"An error occurred while making promptflow_request: {e}")
 
 
+def _parse_tool_arguments(raw: str) -> dict:
+    try:
+        return json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        return {}
+
+
 async def process_function_call(response):
     response_message = response.choices[0].message
     messages = []
@@ -499,11 +503,7 @@ async def process_function_call(response):
     if response_message.tool_calls:
         for tool_call in response_message.tool_calls:
             if tool_call.function.name in LOCAL_TOOLS:
-                try:
-                    args = json.loads(tool_call.function.arguments or "{}")
-                except json.JSONDecodeError:
-                    args = {}
-                function_response = LOCAL_TOOLS[tool_call.function.name](**args)
+                function_response = LOCAL_TOOLS[tool_call.function.name](**_parse_tool_arguments(tool_call.function.arguments))
             elif tool_call.function.name in azure_openai_available_tools:
                 function_response = await openai_remote_azure_function_call(tool_call.function.name, tool_call.function.arguments)
             else:
@@ -578,16 +578,9 @@ async def complete_chat_request(request_body, request_headers):
                 "content": json.dumps({"citations": rag_citations}),
             })
 
-        if (
-            bool(LOCAL_TOOLS)
-            or (
-                app_settings.base_settings.llm_source == "azure"
-                and app_settings.azure_openai.function_call_azure_functions_enabled
-            )
-        ):
-            function_response = await process_function_call(response)
+        function_response = await process_function_call(response)
 
-            if function_response:
+        if function_response:
                 request_body["messages"].extend(function_response)
 
                 response, apim_request_id, _ = await send_chat_request(request_body, request_headers)
@@ -637,11 +630,7 @@ async def process_function_call_stream(completionChunk, function_call_stream_sta
             
             for tool_call in function_call_stream_state.tool_calls:
                 if tool_call["tool_name"] in LOCAL_TOOLS:
-                    try:
-                        args = json.loads(tool_call["tool_arguments"] or "{}")
-                    except json.JSONDecodeError:
-                        args = {}
-                    tool_response = LOCAL_TOOLS[tool_call["tool_name"]](**args)
+                    tool_response = LOCAL_TOOLS[tool_call["tool_name"]](**_parse_tool_arguments(tool_call["tool_arguments"]))
                 else:
                     tool_response = await openai_remote_azure_function_call(tool_call["tool_name"], tool_call["tool_arguments"])
 
@@ -689,34 +678,23 @@ async def stream_chat_request(request_body, request_headers):
                 "apim-request-id": apim_request_id,
             }
 
-        if (
-            bool(LOCAL_TOOLS)
-            or (
-                app_settings.base_settings.llm_source == "azure"
-                and app_settings.azure_openai.function_call_azure_functions_enabled
-            )
-        ):
-            # Maintain state during function call streaming
-            function_call_stream_state = AzureOpenaiFunctionCallStreamState()
+        # Maintain state during function call streaming
+        function_call_stream_state = AzureOpenaiFunctionCallStreamState()
 
-            async for completionChunk in response:
-                stream_state = await process_function_call_stream(completionChunk, function_call_stream_state, request_body, request_headers, history_metadata, apim_request_id)
+        async for completionChunk in response:
+            stream_state = await process_function_call_stream(completionChunk, function_call_stream_state, request_body, request_headers, history_metadata, apim_request_id)
 
-                # No function call, asistant response
-                if stream_state == "INITIAL":
-                    yield format_stream_response(completionChunk, history_metadata, apim_request_id)
-
-                # Function call stream completed, functions were executed.
-                # Append function calls and results to history and send to OpenAI, to stream the final answer.
-                if stream_state == "COMPLETED":
-                    request_body["messages"].extend(function_call_stream_state.function_messages)
-                    function_response, apim_request_id, _ = await send_chat_request(request_body, request_headers)
-                    async for functionCompletionChunk in function_response:
-                        yield format_stream_response(functionCompletionChunk, history_metadata, apim_request_id)
-
-        else:
-            async for completionChunk in response:
+            # No function call, assistant response
+            if stream_state == "INITIAL":
                 yield format_stream_response(completionChunk, history_metadata, apim_request_id)
+
+            # Function call stream completed, functions were executed.
+            # Append function calls and results to history and send to OpenAI, to stream the final answer.
+            if stream_state == "COMPLETED":
+                request_body["messages"].extend(function_call_stream_state.function_messages)
+                function_response, apim_request_id, _ = await send_chat_request(request_body, request_headers)
+                async for functionCompletionChunk in function_response:
+                    yield format_stream_response(functionCompletionChunk, history_metadata, apim_request_id)
 
     return generate(apim_request_id=apim_request_id, history_metadata=history_metadata)
 
