@@ -636,7 +636,14 @@ async def process_function_call_stream(completionChunk, function_call_stream_sta
             function_call_stream_state.tool_calls.append(function_call_stream_state.current_tool_call)
             
             for tool_call in function_call_stream_state.tool_calls:
-                tool_response = await openai_remote_azure_function_call(tool_call["tool_name"], tool_call["tool_arguments"])
+                if tool_call["tool_name"] in LOCAL_TOOLS:
+                    try:
+                        args = json.loads(tool_call["tool_arguments"] or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    tool_response = LOCAL_TOOLS[tool_call["tool_name"]](**args)
+                else:
+                    tool_response = await openai_remote_azure_function_call(tool_call["tool_name"], tool_call["tool_arguments"])
 
                 function_call_stream_state.function_messages.append({
                     "role": "assistant",
@@ -683,8 +690,11 @@ async def stream_chat_request(request_body, request_headers):
             }
 
         if (
-            app_settings.base_settings.llm_source == "azure"
-            and app_settings.azure_openai.function_call_azure_functions_enabled
+            bool(LOCAL_TOOLS)
+            or (
+                app_settings.base_settings.llm_source == "azure"
+                and app_settings.azure_openai.function_call_azure_functions_enabled
+            )
         ):
             # Maintain state during function call streaming
             function_call_stream_state = AzureOpenaiFunctionCallStreamState()
