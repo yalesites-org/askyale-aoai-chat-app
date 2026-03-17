@@ -29,9 +29,9 @@ def _make_app_settings(function_call_enabled=False, llm_source="azure"):
 
 
 @pytest.mark.asyncio
-async def test_local_tools_always_included_in_model_args():
-    """get_current_datetime tool is always injected regardless of Azure Functions setting."""
-    settings = _make_app_settings(function_call_enabled=False)
+async def test_local_tools_injected_for_portkey():
+    """get_current_datetime tool is injected for portkey regardless of Azure Functions setting."""
+    settings = _make_app_settings(function_call_enabled=False, llm_source="portkey")
 
     with patch("app.app_settings", settings), patch("app.MS_DEFENDER_ENABLED", False), patch("app.azure_openai_tools", []):
         from app import prepare_model_args
@@ -45,9 +45,23 @@ async def test_local_tools_always_included_in_model_args():
 
 
 @pytest.mark.asyncio
-async def test_local_tools_merged_with_azure_tools():
-    """Local tools are merged with Azure Function tools when both are present."""
-    settings = _make_app_settings(function_call_enabled=True)
+async def test_local_tools_not_injected_for_azure_without_flag():
+    """Local tools are not injected for Azure when function calling is not enabled."""
+    settings = _make_app_settings(function_call_enabled=False, llm_source="azure")
+
+    with patch("app.app_settings", settings), patch("app.MS_DEFENDER_ENABLED", False), patch("app.azure_openai_tools", []):
+        from app import prepare_model_args
+
+        body = {"messages": [{"role": "user", "content": "hello"}]}
+        model_args, _ = await prepare_model_args(body, {})
+
+    assert "tools" not in model_args
+
+
+@pytest.mark.asyncio
+async def test_azure_functions_tools_injected_for_azure_with_flag():
+    """Azure Functions tools are injected for Azure when the flag is enabled."""
+    settings = _make_app_settings(function_call_enabled=True, llm_source="azure")
 
     fake_azure_tool = {
         "type": "function",
@@ -61,15 +75,16 @@ async def test_local_tools_merged_with_azure_tools():
         model_args, _ = await prepare_model_args(body, {})
 
     tool_names = [t["function"]["name"] for t in model_args["tools"]]
-    assert "get_current_datetime" in tool_names
     assert "azure_custom_tool" in tool_names
+    assert "get_current_datetime" not in tool_names
 
 
 @pytest.mark.asyncio
-async def test_process_function_call_handles_datetime_tool():
-    """process_function_call invokes get_current_datetime locally."""
+async def test_process_function_call_portkey_uses_tools_format():
+    """Portkey path: process_function_call uses role:tool and tool_calls array."""
     import json
 
+    settings = _make_app_settings(llm_source="portkey")
     tool_call = MagicMock()
     tool_call.function.name = "get_current_datetime"
     tool_call.function.arguments = json.dumps({"timezone": "UTC"})
@@ -78,9 +93,8 @@ async def test_process_function_call_handles_datetime_tool():
     response.choices[0].message.tool_calls = [tool_call]
     response.choices[0].message.role = "assistant"
 
-    with patch("app.azure_openai_available_tools", []):
+    with patch("app.app_settings", settings), patch("app.azure_openai_available_tools", []):
         from app import process_function_call
-
         messages = await process_function_call(response)
 
     assert messages is not None
@@ -89,5 +103,34 @@ async def test_process_function_call_handles_datetime_tool():
     assert "tool_calls" in messages[0]
     assert messages[1]["role"] == "tool"
     assert "tool_call_id" in messages[1]
+    result = json.loads(messages[1]["content"])
+    assert "datetime" in result
+
+
+@pytest.mark.asyncio
+async def test_process_function_call_azure_uses_function_format():
+    """Azure path: process_function_call uses role:function and function_call (original format)."""
+    import json
+
+    settings = _make_app_settings(llm_source="azure", function_call_enabled=True)
+    tool_call = MagicMock()
+    tool_call.function.name = "get_current_datetime"
+    tool_call.function.arguments = json.dumps({"timezone": "UTC"})
+
+    response = MagicMock()
+    response.choices[0].message.tool_calls = [tool_call]
+    response.choices[0].message.role = "assistant"
+
+    with patch("app.app_settings", settings), patch("app.azure_openai_available_tools", []):
+        from app import process_function_call
+        messages = await process_function_call(response)
+
+    assert messages is not None
+    assert len(messages) == 2
+    assert messages[0]["role"] == "assistant"
+    assert "function_call" in messages[0]
+    assert "tool_calls" not in messages[0]
+    assert messages[1]["role"] == "function"
+    assert "name" in messages[1]
     result = json.loads(messages[1]["content"])
     assert "datetime" in result
