@@ -86,6 +86,8 @@ async def test_process_function_call_handles_datetime_tool():
     assert messages is not None
     assert len(messages) == 2
     assert messages[0]["role"] == "assistant"
-    assert messages[1]["role"] == "function"
+    assert "tool_calls" in messages[0]
+    assert messages[1]["role"] == "tool"
+    assert "tool_call_id" in messages[1]
     result = json.loads(messages[1]["content"])
     assert "datetime" in result

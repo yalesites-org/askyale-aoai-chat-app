@@ -498,48 +498,56 @@ def _parse_tool_arguments(raw: str) -> dict:
 
 async def process_function_call(response):
     response_message = response.choices[0].message
-    messages = []
 
-    if response_message.tool_calls:
-        for tool_call in response_message.tool_calls:
-            if tool_call.function.name in LOCAL_TOOLS:
-                function_response = LOCAL_TOOLS[tool_call.function.name](**_parse_tool_arguments(tool_call.function.arguments))
-            elif tool_call.function.name in azure_openai_available_tools:
-                function_response = await openai_remote_azure_function_call(tool_call.function.name, tool_call.function.arguments)
-            else:
-                continue
+    if not response_message.tool_calls:
+        return None
 
-            # adding assistant response to messages
-            messages.append(
+    tool_results = []
+    for tool_call in response_message.tool_calls:
+        if tool_call.function.name in LOCAL_TOOLS:
+            function_response = LOCAL_TOOLS[tool_call.function.name](**_parse_tool_arguments(tool_call.function.arguments))
+        elif tool_call.function.name in azure_openai_available_tools:
+            function_response = await openai_remote_azure_function_call(tool_call.function.name, tool_call.function.arguments)
+        else:
+            continue
+        tool_results.append((tool_call, function_response))
+
+    if not tool_results:
+        return None
+
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
                 {
-                    "role": response_message.role,
-                    "function_call": {
-                        "name": tool_call.function.name,
-                        "arguments": tool_call.function.arguments,
-                    },
-                    "content": None,
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
                 }
-            )
-            
-            # adding function response to messages
-            messages.append(
-                {
-                    "role": "function",
-                    "name": tool_call.function.name,
-                    "content": function_response,
-                }
-            )  # extend conversation with function response
-        
-        return messages
-    
-    return None
+                for tc, _ in tool_results
+            ],
+            "content": None,
+        }
+    ]
+    for tool_call, function_response in tool_results:
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": function_response,
+            }
+        )
+    return messages
 
 async def send_chat_request(request_body, request_headers):
     filtered_messages = []
     messages = request_body.get("messages", [])
     for message in messages:
-        if message.get("role") != 'tool':
-            filtered_messages.append(message)
+        # Strip RAG citation pseudo-messages (role=tool, no tool_call_id) injected for
+        # the client UI but not meaningful to the LLM. Real tool results have tool_call_id.
+        if message.get("role") == "tool" and not message.get("tool_call_id"):
+            continue
+        filtered_messages.append(message)
 
     request_body['messages'] = filtered_messages
     model_args, rag_citations = await prepare_model_args(request_body, request_headers)
@@ -628,24 +636,30 @@ async def process_function_call_stream(completionChunk, function_call_stream_sta
             function_call_stream_state.current_tool_call["tool_arguments"] = function_call_stream_state.tool_arguments_stream
             function_call_stream_state.tool_calls.append(function_call_stream_state.current_tool_call)
             
+            tool_responses = []
             for tool_call in function_call_stream_state.tool_calls:
                 if tool_call["tool_name"] in LOCAL_TOOLS:
                     tool_response = LOCAL_TOOLS[tool_call["tool_name"]](**_parse_tool_arguments(tool_call["tool_arguments"]))
                 else:
                     tool_response = await openai_remote_azure_function_call(tool_call["tool_name"], tool_call["tool_arguments"])
+                tool_responses.append(tool_response)
 
+            function_call_stream_state.function_messages.append({
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": tc["tool_id"],
+                        "type": "function",
+                        "function": {"name": tc["tool_name"], "arguments": tc["tool_arguments"]},
+                    }
+                    for tc in function_call_stream_state.tool_calls
+                ],
+                "content": None,
+            })
+            for tool_call, tool_response in zip(function_call_stream_state.tool_calls, tool_responses):
                 function_call_stream_state.function_messages.append({
-                    "role": "assistant",
-                    "function_call": {
-                        "name" : tool_call["tool_name"],
-                        "arguments": tool_call["tool_arguments"]
-                    },
-                    "content": None
-                })
-                function_call_stream_state.function_messages.append({
+                    "role": "tool",
                     "tool_call_id": tool_call["tool_id"],
-                    "role": "function",
-                    "name": tool_call["tool_name"],
                     "content": tool_response,
                 })
             
