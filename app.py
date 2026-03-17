@@ -498,11 +498,16 @@ async def process_function_call(response):
 
     if response_message.tool_calls:
         for tool_call in response_message.tool_calls:
-            # Check if function exists
-            if tool_call.function.name not in azure_openai_available_tools:
+            if tool_call.function.name in LOCAL_TOOLS:
+                try:
+                    args = json.loads(tool_call.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                function_response = LOCAL_TOOLS[tool_call.function.name](**args)
+            elif tool_call.function.name in azure_openai_available_tools:
+                function_response = await openai_remote_azure_function_call(tool_call.function.name, tool_call.function.arguments)
+            else:
                 continue
-            
-            function_response = await openai_remote_azure_function_call(tool_call.function.name, tool_call.function.arguments)
 
             # adding assistant response to messages
             messages.append(
@@ -574,8 +579,11 @@ async def complete_chat_request(request_body, request_headers):
             })
 
         if (
-            app_settings.base_settings.llm_source == "azure"
-            and app_settings.azure_openai.function_call_azure_functions_enabled
+            bool(LOCAL_TOOLS)
+            or (
+                app_settings.base_settings.llm_source == "azure"
+                and app_settings.azure_openai.function_call_azure_functions_enabled
+            )
         ):
             function_response = await process_function_call(response)
 
