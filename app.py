@@ -25,6 +25,7 @@ from azure.identity.aio import (
 from backend.auth.auth_utils import get_authenticated_user_details
 from backend.security.ms_defender_utils import get_msdefender_user_json
 from backend.history.cosmosdbservice import CosmosConversationClient
+from backend.tools.datetime_tool import LOCAL_TOOLS, LOCAL_TOOLS_SCHEMAS
 from backend.settings import (
     app_settings,
     MINIMUM_SUPPORTED_AZURE_OPENAI_PREVIEW_API_VERSION
@@ -395,12 +396,16 @@ async def prepare_model_args(request_body, request_headers):
             (m for m in reversed(messages) if m["role"] == "user"), None
         )
         if last_user_msg:
+            # Always include local tools; merge with Azure Functions tools when enabled
+            tools_to_use = list(LOCAL_TOOLS_SCHEMAS)
             if (
                 app_settings.base_settings.llm_source == "azure"
                 and app_settings.azure_openai.function_call_azure_functions_enabled
                 and len(azure_openai_tools) > 0
             ):
-                model_args["tools"] = azure_openai_tools
+                tools_to_use.extend(azure_openai_tools)
+            if tools_to_use:
+                model_args["tools"] = tools_to_use
 
             if app_settings.datasource and not is_portkey:
                 model_args["extra_body"] = {
