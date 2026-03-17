@@ -128,7 +128,7 @@ else
     run_cmd az webapp config set \
         --name "$APP_NAME" \
         --resource-group "$RESOURCE_GROUP" \
-        --startup-file "gunicorn app:app -w 3 -k uvicorn.workers.UvicornWorker"
+        --startup-file "gunicorn app:app -w 3 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000"
 fi
 
 echo ""
@@ -146,6 +146,7 @@ run_cmd az webapp config appsettings set \
 
 echo ""
 echo "=== Step 6: Configuring GitHub as deployment source ==="
+echo "This triggers an initial fetch and build, which may take several minutes for large repos."
 run_cmd az webapp deployment source config \
     --name "$APP_NAME" \
     --resource-group "$RESOURCE_GROUP" \
@@ -153,15 +154,51 @@ run_cmd az webapp deployment source config \
     --branch "$BRANCH" \
     --manual-integration
 
-echo ""
-echo "=== Step 7: Triggering deployment sync ==="
-run_cmd az webapp deployment source sync \
-    --name "$APP_NAME" \
-    --resource-group "$RESOURCE_GROUP"
+# Verify the source was configured correctly
+if [[ "$DRY_RUN" != true ]]; then
+    CONFIGURED_BRANCH=$(az webapp deployment source show \
+        --name "$APP_NAME" \
+        --resource-group "$RESOURCE_GROUP" \
+        --query "branch" \
+        --output tsv 2>/dev/null || true)
+
+    if [[ -z "$CONFIGURED_BRANCH" || "$CONFIGURED_BRANCH" == "null" ]]; then
+        echo ""
+        echo "WARNING: Branch was not set after source config. The initial fetch may have"
+        echo "timed out (common with large repos). Try running deploy-sync.sh to retry."
+        exit 1
+    fi
+fi
 
 echo ""
-echo "=== Step 8: Deployment status ==="
+echo "=== Step 7: Waiting for deployment ==="
 if [[ "$DRY_RUN" != true ]]; then
+    echo "Polling deployment status..."
+    for i in $(seq 1 30); do
+        STATUS=$(az webapp log deployment list \
+            --name "$APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query "[0].{status: status, complete: complete}" \
+            --output json 2>/dev/null || echo '{}')
+
+        COMPLETE=$(echo "$STATUS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('complete', False))" 2>/dev/null || echo "False")
+
+        if [[ "$COMPLETE" == "True" ]]; then
+            echo "Deployment complete."
+            break
+        fi
+
+        if [[ $i -eq 30 ]]; then
+            echo "Deployment still in progress after 5 minutes."
+            echo "The Oryx build may still be running. Check status with deploy-sync.sh or:"
+            echo "  az webapp log deployment list --name $APP_NAME --resource-group $RESOURCE_GROUP --output table"
+            break
+        fi
+
+        sleep 10
+    done
+
+    echo ""
     az webapp log deployment list \
         --name "$APP_NAME" \
         --resource-group "$RESOURCE_GROUP" \
@@ -169,6 +206,5 @@ if [[ "$DRY_RUN" != true ]]; then
 fi
 
 echo ""
-echo "Deployment configured. The sync may still be in progress."
 echo "To tail logs, run:"
 echo "  az webapp log tail --name \"$APP_NAME\" --resource-group \"$RESOURCE_GROUP\""
