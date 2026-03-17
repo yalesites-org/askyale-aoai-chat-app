@@ -1,6 +1,7 @@
 import copy
 import json
 import os
+import re
 import logging
 import uuid
 import httpx
@@ -496,6 +497,13 @@ def _parse_tool_arguments(raw: str) -> dict:
         return {}
 
 
+_TOOL_ID_UNSAFE = re.compile(r"[^a-zA-Z0-9_-]")
+
+def _safe_tool_id(tool_id: str) -> str:
+    """Sanitize a tool call ID to satisfy Vertex AI's ^[a-zA-Z0-9_-]+$ constraint."""
+    return _TOOL_ID_UNSAFE.sub("_", str(tool_id))
+
+
 async def process_function_call(response):
     response_message = response.choices[0].message
 
@@ -520,7 +528,7 @@ async def process_function_call(response):
             "role": "assistant",
             "tool_calls": [
                 {
-                    "id": tc.id,
+                    "id": _safe_tool_id(tc.id),
                     "type": "function",
                     "function": {"name": tc.function.name, "arguments": tc.function.arguments},
                 }
@@ -533,7 +541,7 @@ async def process_function_call(response):
         messages.append(
             {
                 "role": "tool",
-                "tool_call_id": tool_call.id,
+                "tool_call_id": _safe_tool_id(tool_call.id),
                 "content": function_response,
             }
         )
@@ -648,7 +656,7 @@ async def process_function_call_stream(completionChunk, function_call_stream_sta
                 "role": "assistant",
                 "tool_calls": [
                     {
-                        "id": tc["tool_id"],
+                        "id": _safe_tool_id(tc["tool_id"]),
                         "type": "function",
                         "function": {"name": tc["tool_name"], "arguments": tc["tool_arguments"]},
                     }
@@ -659,7 +667,7 @@ async def process_function_call_stream(completionChunk, function_call_stream_sta
             for tool_call, tool_response in zip(function_call_stream_state.tool_calls, tool_responses):
                 function_call_stream_state.function_messages.append({
                     "role": "tool",
-                    "tool_call_id": tool_call["tool_id"],
+                    "tool_call_id": _safe_tool_id(tool_call["tool_id"]),
                     "content": tool_response,
                 })
             
