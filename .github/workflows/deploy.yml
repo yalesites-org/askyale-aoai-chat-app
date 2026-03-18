@@ -6,11 +6,7 @@ on:
       app_name:
         description: "Azure App Service name to deploy to"
         required: true
-        type: choice
-        options:
-          - beaconprompt
-          - beaconcs3254
-          - beaconcommencement
+        type: string
       resource_group:
         description: "Azure resource group"
         required: false
