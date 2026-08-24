@@ -1,0 +1,40 @@
+name: Deploy to Azure App Service
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: "Azure App Service name to deploy to"
+        required: true
+        type: string
+      resource_group:
+        description: "Azure resource group"
+        required: false
+        default: "subscription-ai-eastus2-rg"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: deploy
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Login to Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ inputs.app_name }}
+          resource-group-name: ${{ inputs.resource_group }}
+          # Oryx builds Python deps on the server (SCM_DO_BUILD_DURING_DEPLOYMENT=true must be set on the App Service)
+          # static/ is pre-committed to the repo; no frontend build step needed here
