@@ -52,6 +52,35 @@ def test_dotenv_with_azure_search_success(app_settings):
     print(payload)
 
 
+def test_dotenv_portkey_source(monkeypatch):
+    # Clear real PORTKEY_* env vars so dotenv values take precedence
+    for key in list(os.environ):
+        if key.startswith("PORTKEY_"):
+            monkeypatch.delenv(key, raising=False)
+
+    dotenv_path = os.path.join(
+        os.path.dirname(__file__), "dotenv_data", "dotenv_portkey_source"
+    )
+    os.environ["DOTENV_PATH"] = dotenv_path
+    settings_module = import_module("backend.settings")
+    settings_module = reload(settings_module)
+    app_settings = settings_module.app_settings
+
+    assert app_settings.base_settings.llm_source == "portkey"
+    assert app_settings.portkey is not None
+    assert app_settings.portkey.api_key == "pk-test-key-123"
+    assert app_settings.portkey.base_uri == "https://api.portkey.ai/v1"
+
+
+def test_dotenv_azure_default_llm_source(app_settings):
+    """Existing Azure config without LLM_SOURCE defaults to azure."""
+    assert app_settings.base_settings.llm_source == "azure"
+    assert app_settings.portkey is None
+    assert app_settings.azure_openai is not None
+
+
+
+
 def test_dotenv_with_elasticsearch_success(app_settings):
     # Validate model object
     assert app_settings.search is not None

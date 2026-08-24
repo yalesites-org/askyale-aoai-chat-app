@@ -82,6 +82,18 @@ class _PromptflowSettings(BaseSettings):
     citations_field_name: str = "documents"
 
 
+class _PortkeySettings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="PORTKEY_",
+        env_file=DOTENV_PATH,
+        extra="ignore",
+        env_ignore_empty=True
+    )
+
+    api_key: str
+    base_uri: str
+
+
 class _AzureOpenAIFunction(BaseModel):
     name: str = Field(..., min_length=1)
     description: str = Field(..., min_length=1)
@@ -119,6 +131,7 @@ class _AzureOpenAISettings(BaseSettings):
     presence_penalty: Optional[confloat(ge=-2.0, le=2.0)] = 0.0
     frequency_penalty: Optional[confloat(ge=-2.0, le=2.0)] = 0.0
     system_message: str = "You are an AI assistant that helps people find information."
+    admin_system_message: Optional[str] = None
     preview_api_version: str = MINIMUM_SUPPORTED_AZURE_OPENAI_PREVIEW_API_VERSION
     embedding_endpoint: Optional[str] = None
     embedding_key: Optional[str] = None
@@ -128,6 +141,7 @@ class _AzureOpenAISettings(BaseSettings):
     function_call_azure_functions_tools_base_url: Optional[str] = None
     function_call_azure_functions_tool_key: Optional[str] = None
     function_call_azure_functions_tool_base_url: Optional[str] = None
+    excluded_params: Optional[str] = None
     
     @field_validator('tools', mode='before')
     @classmethod
@@ -761,6 +775,7 @@ class _BaseSettings(BaseSettings):
     auth_enabled: bool = True
     sanitize_answer: bool = False
     use_promptflow: bool = False
+    llm_source: Literal["azure", "portkey"] = "azure"
 
 
 class _AppSettings(BaseModel):
@@ -768,11 +783,12 @@ class _AppSettings(BaseModel):
     azure_openai: _AzureOpenAISettings = _AzureOpenAISettings()
     search: _SearchCommonSettings = _SearchCommonSettings()
     ui: Optional[_UiSettings] = _UiSettings()
-    
+
     # Constructed properties
     chat_history: Optional[_ChatHistorySettings] = None
     datasource: Optional[DatasourcePayloadConstructor] = None
     promptflow: Optional[_PromptflowSettings] = None
+    portkey: Optional[_PortkeySettings] = None
 
     @model_validator(mode="after")
     def set_promptflow_settings(self) -> Self:
@@ -834,6 +850,15 @@ class _AppSettings(BaseModel):
         except ValidationError as e:
             logging.warning("No datasource configuration found in the environment -- calls will be made to Azure OpenAI without grounding data.")
             logging.warning(e.errors())
+            return self
+
+    @model_validator(mode="after")
+    def set_portkey_settings(self) -> Self:
+        try:
+            self.portkey = _PortkeySettings()
+        except ValidationError:
+            self.portkey = None
+        return self
 
 
 app_settings = _AppSettings()
