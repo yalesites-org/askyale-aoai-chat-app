@@ -25,6 +25,7 @@ from azure.identity.aio import (
 from backend.auth.auth_utils import get_authenticated_user_details
 from backend.security.ms_defender_utils import get_msdefender_user_json
 from backend.history.cosmosdbservice import CosmosConversationClient
+from backend.tools.datetime_tool import LOCAL_TOOLS, LOCAL_TOOLS_SCHEMAS
 from backend.settings import (
     app_settings,
     MINIMUM_SUPPORTED_AZURE_OPENAI_PREVIEW_API_VERSION
@@ -312,6 +313,10 @@ async def prepare_model_args(request_body, request_headers):
                         messages_helper["name"] = message["name"]
                     if "function_call" in message:
                         messages_helper["function_call"] = message["function_call"]
+                    if "tool_calls" in message:
+                        messages_helper["tool_calls"] = message["tool_calls"]
+                    if "tool_call_id" in message:
+                        messages_helper["tool_call_id"] = message["tool_call_id"]
                     messages_helper["content"] = message["content"]
                     if "context" in message:
                         context_obj = json.loads(message["context"])
@@ -395,11 +400,15 @@ async def prepare_model_args(request_body, request_headers):
             (m for m in reversed(messages) if m["role"] == "user"), None
         )
         if last_user_msg:
-            if (
+            if is_portkey:
+                # Portkey: always include local tools
+                model_args["tools"] = LOCAL_TOOLS_SCHEMAS
+            elif (
                 app_settings.base_settings.llm_source == "azure"
                 and app_settings.azure_openai.function_call_azure_functions_enabled
                 and len(azure_openai_tools) > 0
             ):
+                # Azure: only include Azure Functions tools when explicitly enabled
                 model_args["tools"] = azure_openai_tools
 
             if app_settings.datasource and not is_portkey:
@@ -487,49 +496,73 @@ async def promptflow_request(request):
         logging.error(f"An error occurred while making promptflow_request: {e}")
 
 
+def _parse_tool_arguments(raw: str) -> dict:
+    try:
+        return json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        return {}
+
+
 async def process_function_call(response):
     response_message = response.choices[0].message
-    messages = []
 
-    if response_message.tool_calls:
-        for tool_call in response_message.tool_calls:
-            # Check if function exists
-            if tool_call.function.name not in azure_openai_available_tools:
-                continue
-            
+    if not response_message.tool_calls:
+        return None
+
+    tool_results = []
+    for tool_call in response_message.tool_calls:
+        if tool_call.function.name in LOCAL_TOOLS:
+            function_response = LOCAL_TOOLS[tool_call.function.name](**_parse_tool_arguments(tool_call.function.arguments))
+        elif tool_call.function.name in azure_openai_available_tools:
             function_response = await openai_remote_azure_function_call(tool_call.function.name, tool_call.function.arguments)
+        else:
+            continue
+        tool_results.append((tool_call, function_response))
 
-            # adding assistant response to messages
-            messages.append(
-                {
-                    "role": response_message.role,
-                    "function_call": {
-                        "name": tool_call.function.name,
-                        "arguments": tool_call.function.arguments,
-                    },
-                    "content": None,
-                }
-            )
-            
-            # adding function response to messages
-            messages.append(
-                {
-                    "role": "function",
-                    "name": tool_call.function.name,
-                    "content": function_response,
-                }
-            )  # extend conversation with function response
-        
-        return messages
-    
-    return None
+    if not tool_results:
+        return None
+
+    if app_settings.base_settings.llm_source == "portkey":
+        # Portkey (Vertex AI / Anthropic): use OpenAI tools format.
+        # Sequential IDs avoid provider-specific character restrictions on round-trip.
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": f"tool_{i}",
+                        "type": "function",
+                        "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                    }
+                    for i, (tc, _) in enumerate(tool_results)
+                ],
+                "content": None,
+            }
+        ]
+        for i, (tool_call, function_response) in enumerate(tool_results):
+            messages.append({"role": "tool", "tool_call_id": f"tool_{i}", "content": function_response})
+    else:
+        # Azure: restore original function calling format
+        messages = []
+        for tool_call, function_response in tool_results:
+            messages.append({
+                "role": response_message.role,
+                "function_call": {"name": tool_call.function.name, "arguments": tool_call.function.arguments},
+                "content": None,
+            })
+            messages.append({"role": "function", "name": tool_call.function.name, "content": function_response})
+
+    return messages
 
 async def send_chat_request(request_body, request_headers):
     filtered_messages = []
     messages = request_body.get("messages", [])
     for message in messages:
-        if message.get("role") != 'tool':
-            filtered_messages.append(message)
+        # Strip RAG citation pseudo-messages (role=tool, no tool_call_id) injected for
+        # the client UI but not meaningful to the LLM. Real tool results have tool_call_id.
+        if message.get("role") == "tool" and not message.get("tool_call_id"):
+            continue
+        filtered_messages.append(message)
 
     request_body['messages'] = filtered_messages
     model_args, rag_citations = await prepare_model_args(request_body, request_headers)
@@ -569,17 +602,22 @@ async def complete_chat_request(request_body, request_headers):
             })
 
         if (
-            app_settings.base_settings.llm_source == "azure"
-            and app_settings.azure_openai.function_call_azure_functions_enabled
+            (app_settings.base_settings.llm_source == "portkey" and bool(LOCAL_TOOLS))
+            or (
+                app_settings.base_settings.llm_source == "azure"
+                and app_settings.azure_openai.function_call_azure_functions_enabled
+            )
         ):
             function_response = await process_function_call(response)
+        else:
+            function_response = None
 
-            if function_response:
-                request_body["messages"].extend(function_response)
+        if function_response:
+            request_body["messages"].extend(function_response)
 
-                response, apim_request_id, _ = await send_chat_request(request_body, request_headers)
-                history_metadata = request_body.get("history_metadata", {})
-                non_streaming_response = format_non_streaming_response(response, history_metadata, apim_request_id)
+            response, apim_request_id, _ = await send_chat_request(request_body, request_headers)
+            history_metadata = request_body.get("history_metadata", {})
+            non_streaming_response = format_non_streaming_response(response, history_metadata, apim_request_id)
 
     return non_streaming_response
 
@@ -622,23 +660,48 @@ async def process_function_call_stream(completionChunk, function_call_stream_sta
             function_call_stream_state.current_tool_call["tool_arguments"] = function_call_stream_state.tool_arguments_stream
             function_call_stream_state.tool_calls.append(function_call_stream_state.current_tool_call)
             
+            tool_responses = []
             for tool_call in function_call_stream_state.tool_calls:
-                tool_response = await openai_remote_azure_function_call(tool_call["tool_name"], tool_call["tool_arguments"])
+                if tool_call["tool_name"] in LOCAL_TOOLS:
+                    tool_response = LOCAL_TOOLS[tool_call["tool_name"]](**_parse_tool_arguments(tool_call["tool_arguments"]))
+                else:
+                    tool_response = await openai_remote_azure_function_call(tool_call["tool_name"], tool_call["tool_arguments"])
+                tool_responses.append(tool_response)
 
+            if app_settings.base_settings.llm_source == "portkey":
+                # Portkey (Vertex AI / Anthropic): use OpenAI tools format
                 function_call_stream_state.function_messages.append({
                     "role": "assistant",
-                    "function_call": {
-                        "name" : tool_call["tool_name"],
-                        "arguments": tool_call["tool_arguments"]
-                    },
-                    "content": None
+                    "tool_calls": [
+                        {
+                            "id": f"tool_{i}",
+                            "type": "function",
+                            "function": {"name": tc["tool_name"], "arguments": tc["tool_arguments"]},
+                        }
+                        for i, tc in enumerate(function_call_stream_state.tool_calls)
+                    ],
+                    "content": None,
                 })
-                function_call_stream_state.function_messages.append({
-                    "tool_call_id": tool_call["tool_id"],
-                    "role": "function",
-                    "name": tool_call["tool_name"],
-                    "content": tool_response,
-                })
+                for i, (tool_call, tool_response) in enumerate(zip(function_call_stream_state.tool_calls, tool_responses)):
+                    function_call_stream_state.function_messages.append({
+                        "role": "tool",
+                        "tool_call_id": f"tool_{i}",
+                        "content": tool_response,
+                    })
+            else:
+                # Azure: restore original function calling format
+                for tool_call, tool_response in zip(function_call_stream_state.tool_calls, tool_responses):
+                    function_call_stream_state.function_messages.append({
+                        "role": "assistant",
+                        "function_call": {"name": tool_call["tool_name"], "arguments": tool_call["tool_arguments"]},
+                        "content": None,
+                    })
+                    function_call_stream_state.function_messages.append({
+                        "tool_call_id": tool_call["tool_id"],
+                        "role": "function",
+                        "name": tool_call["tool_name"],
+                        "content": tool_response,
+                    })
             
             function_call_stream_state.streaming_state = "COMPLETED"
             return function_call_stream_state.streaming_state
@@ -670,8 +733,11 @@ async def stream_chat_request(request_body, request_headers):
             }
 
         if (
-            app_settings.base_settings.llm_source == "azure"
-            and app_settings.azure_openai.function_call_azure_functions_enabled
+            (app_settings.base_settings.llm_source == "portkey" and bool(LOCAL_TOOLS))
+            or (
+                app_settings.base_settings.llm_source == "azure"
+                and app_settings.azure_openai.function_call_azure_functions_enabled
+            )
         ):
             # Maintain state during function call streaming
             function_call_stream_state = AzureOpenaiFunctionCallStreamState()
@@ -679,7 +745,7 @@ async def stream_chat_request(request_body, request_headers):
             async for completionChunk in response:
                 stream_state = await process_function_call_stream(completionChunk, function_call_stream_state, request_body, request_headers, history_metadata, apim_request_id)
 
-                # No function call, asistant response
+                # No function call, assistant response
                 if stream_state == "INITIAL":
                     yield format_stream_response(completionChunk, history_metadata, apim_request_id)
 
